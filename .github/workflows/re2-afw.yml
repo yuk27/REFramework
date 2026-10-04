@@ -8,7 +8,7 @@ env:
   BUILD_TYPE: Release
 jobs:
   build-re2:
-    runs-on: windows-latest
+    runs-on: windows-2022  # windows-latest no longer ships VS 2022
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
