@@ -85,9 +85,7 @@ public:
         return (Desc*)((uintptr_t)this + s_desc_offset);
     }
 
-    DirectXResource<ID3D12Resource>* get_d3d12_resource_container() {
-        return *(DirectXResource<ID3D12Resource>**)((uintptr_t)this + s_d3d12_resource_offset);
-    }
+    DirectXResource<ID3D12Resource>* get_d3d12_resource_container();
 
 private:
 #if TDB_VER >= 73 || defined(SF6)
@@ -193,13 +191,19 @@ public:
 
     // more here but not needed... for now
 };
-#if TDB_VER >= 73
+#if TDB_VER >= 82
+static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x30);
+#elif TDB_VER >= 73
 static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x28);
 #elif TDB_VER > 67
 #ifdef SF6
 static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x28);
 #else
+#ifdef RE4
+static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x28);
+#else
 static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x20);
+#endif
 #endif
 #else
 static_assert(offsetof(TargetState, m_desc) + offsetof(TargetState::Desc, num_rtv) == 0x28);
@@ -253,7 +257,9 @@ public:
         return state != nullptr ? state->get_native_resource_d3d12() : nullptr;
     }
 
-#if TDB_VER >= 69
+#if TDB_VER >= 81
+    static constexpr uint32_t DRAW_VTABLE_INDEX = 15;
+#elif TDB_VER >= 69
     static constexpr uint32_t DRAW_VTABLE_INDEX = 14;
 #elif TDB_VER > 49
     static constexpr uint32_t DRAW_VTABLE_INDEX = 12;
@@ -402,30 +408,25 @@ private:
 class PrepareOutput : public sdk::renderer::RenderLayer {
 public:
     sdk::renderer::TargetState* get_output_state() {
-        return *(sdk::renderer::TargetState**)((uintptr_t)this + s_output_state_offset);
+        if (auto offset = get_output_state_offset()) {
+            return *(sdk::renderer::TargetState**)((uintptr_t)this + *offset);
+        }
+
+        return nullptr;
     }
 
     void set_output_state(sdk::renderer::TargetState* state) {
-        state->add_ref();
-        *(sdk::renderer::TargetState**)((uintptr_t)this + s_output_state_offset) = state;
+        if (auto offset = get_output_state_offset()) {
+            if (state != nullptr) {
+                state->add_ref();
+            }
+
+            auto& current_state = *(sdk::renderer::TargetState**)((uintptr_t)this + *offset);
+            current_state = state;
+        }
     }
 
-private:
-    // Man I REALLY need a way of automatically finding this.
-#if TDB_VER >= 73
-    static constexpr inline auto s_output_state_offset = 0x128;
-#elif TDB_VER >= 71
-#ifdef MHRISE
-    static constexpr inline auto s_output_state_offset = 0xF8;
-#else
-    // verify for other games, this is for RE4
-    static constexpr inline auto s_output_state_offset = 0x108;
-#endif
-#elif TDB_VER >= 69
-    static constexpr inline auto s_output_state_offset = 0xF8;
-#else
-    static constexpr inline auto s_output_state_offset = 0xE0; // Verified for DMC5
-#endif
+    std::optional<size_t> get_output_state_offset();
 };
 
 class Overlay : public sdk::renderer::RenderLayer {

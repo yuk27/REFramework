@@ -16,6 +16,7 @@ extern "C" {
 };
 
 #include <imgui.h>
+#include <imgui_freetype.h>
 #include <ImGuizmo.h>
 #include <imnodes.h>
 #include "re2-imgui/af_faprolight.hpp"
@@ -31,6 +32,7 @@ extern "C" {
 
 #include "Mods.hpp"
 #include "mods/Camera.hpp"
+#include "mods/FaultyFileDetector.hpp"
 #include "mods/LooseFileLoader.hpp"
 #include "mods/PluginLoader.hpp"
 #include "mods/VR.hpp"
@@ -503,6 +505,10 @@ REFramework::REFramework(HMODULE reframework_module)
     startup_lookup_thread->detach();
 #endif
 
+#if defined(MHWILDS)
+    FaultyFileDetector::early_init();
+#endif
+
 #if defined(REENGINE_AT)
     utility::ThreadSuspender suspender{};
     IntegrityCheckBypass::ignore_application_entries();
@@ -520,6 +526,12 @@ REFramework::REFramework(HMODULE reframework_module)
 #if defined(DD2) || TDB_VER >= 74
     // Fixes new code added in DD2 only. Maybe >= TDB73 too. Probably will change.
     IntegrityCheckBypass::immediate_patch_dd2();
+#endif
+
+#if TDB_VER >= 82
+    // Fixes new code added in RE9 only. Maybe >= TDB83 too. Probably will change.
+    // Addendum: Found to be present in MHSTORIES3 (TDB 82) as well, so this is not RE9 exclusive.
+    IntegrityCheckBypass::immediate_patch_re9();
 #endif
 
     // Seen in SF6
@@ -558,11 +570,21 @@ REFramework::REFramework(HMODULE reframework_module)
 
     if (sdk::RETypeDB::get() != nullptr) {
         auto& loader = LooseFileLoader::get(); // Initialize this really early
+        auto &integrity_bypass = IntegrityCheckBypass::get_shared_instance();
+
+#if defined(MHWILDS)
+        auto& faulty_file_detector = FaultyFileDetector::get();
+#endif
 
         const auto config_path = get_persistent_dir(REFrameworkConfig::REFRAMEWORK_CONFIG_NAME.data()).string();
         if (fs::exists(utility::widen(config_path))) {
             utility::Config cfg{ config_path };
             loader->on_config_load(cfg);
+
+#if defined(MHWILDS)
+            faulty_file_detector->on_config_load(cfg);
+#endif
+            integrity_bypass->on_config_load(cfg);
         }
 
         if (loader->is_enabled()) {
@@ -589,7 +611,7 @@ REFramework::REFramework(HMODULE reframework_module)
                 }
 
                 if (std::string_view{t->get_name()} == "Renderer" && std::string_view{t->get_namespace()} == "via.render") {
-                    spdlog::info("Renderer type found manually");
+                    spdlog::info("Renderer type found manually @ {:x}", (uintptr_t)t);
                     renderer_t = t;
                     break;
                 }
@@ -635,9 +657,15 @@ REFramework::REFramework(HMODULE reframework_module)
         continue;
     }
     
-    spdlog::info("Found renderer, waiting for first frame...");
+    spdlog::info("Found renderer @ {:x} (type: {:x}), waiting for first frame...", (uintptr_t)renderer, (uintptr_t)renderer_t);
 
     bool valid_render_frame = false;
+
+    if (renderer_has_render_frame_fn) {
+        spdlog::info("Renderer has get_RenderFrame function");
+    } else {
+        spdlog::info("Renderer does not have get_RenderFrame function");
+    }
 
     while (renderer_has_render_frame_fn) try {
         // This function is static so its fine if renderer is null.
@@ -795,7 +823,7 @@ void REFramework::run_imgui_frame(bool from_present) {
     const bool is_init_ok = m_error.empty() && m_game_data_initialized;
 
     consume_input();
-    update_fonts();
+    init_fonts();
     
     ImGui_ImplWin32_NewFrame();
 
@@ -873,7 +901,7 @@ void REFramework::on_frame_d3d11() {
 
     if (!m_has_frame) {
         if (!is_init_ok) {
-            update_fonts();
+            init_fonts();
             invalidate_device_objects();
 
             ImGui_ImplDX11_NewFrame();
@@ -995,7 +1023,7 @@ void REFramework::on_frame_d3d12() {
 
     if (!m_has_frame) {
         if (!is_init_ok) {
-            update_fonts();
+            init_fonts();
             do_per_frame_thing();
             // hooks don't run until after initialization, so we just render the imgui window while initalizing.
             run_imgui_frame(true);
@@ -1447,77 +1475,124 @@ void REFramework::consume_input() {
     m_accumulated_mouse_delta[1] = 0.0f;
 }
 
-int REFramework::add_font(const std::filesystem::path& filepath, int size, const std::vector<ImWchar>& ranges) {
+int REFramework::add_font(const std::filesystem::path& filepath, float size) {
     // Look for a font already matching this description.
     for (int i = 0; i < m_additional_fonts.size(); ++i) {
         const auto& font = m_additional_fonts[i];
 
-        if (font.filepath == filepath && font.size == size && font.ranges == ranges) {
+        if (font.filepath == filepath && abs(font.size - size) < 0.1) {
             return i;
         }
     }
 
-    m_additional_fonts.emplace_back(REFramework::AdditionalFont{filepath, size, ranges, (ImFont*)nullptr});
-    m_fonts_need_updating = true;
+    REFramework::AdditionalFont additional_font{filepath, size};
+    if (fs::exists(filepath)) {
+        auto path = filepath.string();
+        if (!loaded_fonts.contains(path)) {
+            loaded_fonts[path] = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), size);
+        }
+        additional_font.font = loaded_fonts[path];
+        // font.font = fonts->AddFontFromFileTTF(path.c_str(), font.size);
+    } else {
+        additional_font.font = m_default_font;
+    }
 
+    m_additional_fonts.emplace_back(additional_font);
+    
     return m_additional_fonts.size() - 1;
 }
 
-void REFramework::update_fonts() {
-    if (!m_fonts_need_updating) {
+void REFramework::init_fonts() {
+    if (!m_fonts_need_init) {
         return;
     }
 
-    m_fonts_need_updating = false;
+    m_fonts_need_init = false;
 
     auto& fonts = ImGui::GetIO().Fonts;
-    fonts->Clear();
+    fonts->FontLoader = ImGuiFreeType::GetFontLoader();
 
-    // using 'reframework_pictographic.mode' file to 
+    // using 'reframework_pictographic.mode' file to
     // replace '?' to most flag in WorldObjectsViewer
-    ImFontConfig custom_icons{}; 
+    ImFontConfig custom_icons{};
     custom_icons.FontDataOwnedByAtlas = false;
 
-    const ImWchar cjk_ranges[] = {
-        0x0020, 0x00FF, // Basic Latin + Latin Supplement
-        0x2000, 0x206F, // General Punctuation
-        0x3000, 0x30FF, // CJK Symbols and Punctuations, Hiragana, Katakana
-        0x3131, 0x3163, // Korean alphabets
-        0x31F0, 0x31FF, // Katakana Phonetic Extensions
-        0xAC00, 0xD7A3, // Korean characters
-        0xFF00, 0xFFEF, // Half-width characters
-        0xFFFD, 0xFFFD, // Invalid
-        0x4e00, 0x9FAF, // CJK Ideograms,
-        0
+    const auto fonts_path = REFramework::get_persistent_dir() / "reframework" / "fonts";
+    const auto font_path = fonts_path / m_default_font_file;
+
+    // @angelfor3v3r
+    auto load_seguiemj_font = [&]() {   
+        try {
+            wchar_t windows_dir[MAX_PATH]{};
+            if (GetWindowsDirectoryW(windows_dir, MAX_PATH) == 0) {
+                spdlog::error("Failed to get system directory");
+                return;
+            }
+
+            const auto seguiemj_path = std::filesystem::path(windows_dir) / "Fonts" / "seguiemj.ttf";
+
+            if (std::filesystem::exists(seguiemj_path)) {
+                spdlog::info("Loading Segoe UI Emoji font from: {}", seguiemj_path.string());
+
+                ImFontConfig cfg{};
+                cfg.FontDataOwnedByAtlas = true;
+                cfg.FontLoaderFlags |= ImGuiFreeTypeLoaderFlags_LoadColor;
+                cfg.MergeMode        = true;
+                fonts->AddFontFromFileTTF(seguiemj_path.string().c_str(), m_font_size, &cfg);
+            } else {
+                spdlog::warn("Segoe UI Emoji font not found");
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to load default font: {}", e.what());
+            m_default_font_file = "DEFAULT";
+        }
     };
 
-    fonts->AddFontFromMemoryCompressedTTF((void*)RobotoCJKSC_Medium_compressed_data, RobotoCJKSC_Medium_compressed_size, (float)m_font_size, &custom_icons, cjk_ranges);
+    if (m_default_font_file != "DEFAULT" && fs::exists(font_path)) {
+        if (!loaded_fonts.contains(m_default_font_file)) {
+            ImFontConfig cfg{};
+            cfg.FontDataOwnedByAtlas = true;
+            cfg.MergeMode        = false;
 
-    // https://fontawesome.com/
-    custom_icons.PixelSnapH = true;
-    custom_icons.MergeMode = true;
-    custom_icons.FontDataOwnedByAtlas = false;
-    static const ImWchar icon_ranges[] = {0xF000, 0xF976, 0}; // ICON_MIN_FA ICON_MAX_FA
-    fonts->AddFontFromMemoryTTF((void*)af_faprolight_ptr, af_faprolight_size, (float)m_font_size, &custom_icons, icon_ranges);
-
-    for (auto& font : m_additional_fonts) {
-        const ImWchar* ranges = nullptr;
-
-        if (!font.ranges.empty()) {
-            ranges = font.ranges.data();
+            loaded_fonts[m_default_font_file] = fonts->AddFontFromFileTTF(font_path.string().c_str(), m_font_size, &cfg);
         }
 
-        if (fs::exists(font.filepath)) {
-            font.font = fonts->AddFontFromFileTTF(font.filepath.string().c_str(), (float)font.size, nullptr, ranges);
+        if (loaded_fonts[m_default_font_file] == nullptr) {
+            spdlog::error("Failed to load font: {}", m_default_font_file);
+            m_default_font_file = "DEFAULT";
         } else {
-            if (ranges == nullptr) {
-                ranges = cjk_ranges;
-            }
-            font.font = fonts->AddFontFromMemoryCompressedTTF((void*)RobotoCJKSC_Medium_compressed_data, RobotoCJKSC_Medium_compressed_size, (float)font.size, nullptr, ranges);
+            load_seguiemj_font();
+            m_default_font = loaded_fonts[m_default_font_file];
         }
+    } else {
+        if (!loaded_fonts.contains("DEFAULT")) {
+            ImFontConfig cfg{};
+            cfg.FontDataOwnedByAtlas = false;
+
+            loaded_fonts["DEFAULT"] = fonts->AddFontFromMemoryCompressedTTF(RobotoCJKSC_Medium_compressed_data, RobotoCJKSC_Medium_compressed_size, m_font_size, &cfg);
+
+            if (loaded_fonts["DEFAULT"] == nullptr) {
+                spdlog::error("Failed to load default font!");
+                loaded_fonts["DEFAULT"] = fonts->AddFontDefault();
+            } else {
+                spdlog::info("Loaded default font: {}", m_default_font_file);
+            }
+
+            load_seguiemj_font();
+        }
+        
+        m_default_font = loaded_fonts["DEFAULT"];
     }
 
-    fonts->Build();
+    /*if (!loaded_fonts.contains("ICON")) {
+        // https://fontawesome.com/
+        custom_icons.PixelSnapH = true;
+        custom_icons.MergeMode = true;
+        custom_icons.FontDataOwnedByAtlas = false;
+        static const ImWchar icon_ranges[] = {0xF000, 0xF976, 0}; // ICON_MIN_FA ICON_MAX_FA
+        loaded_fonts["ICON"] = fonts->AddFontFromMemoryTTF((void*)af_faprolight_ptr, af_faprolight_size, m_font_size, &custom_icons, icon_ranges);
+    }*/
+
     m_wants_device_object_cleanup = true;
 }
 
@@ -1588,10 +1663,12 @@ void REFramework::draw_ui() {
         m_windows_message_hook->window_toggle_cursor(true);
     }
 
-    ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_Once);
-    
-    static const auto REF_NAME = std::string{"REFramework (UPSCALER) RE4VR"};
+    ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_FirstUseEver);
+
+    ImGui::PushFont(m_default_font, m_font_size);
+    // RE2 AFW port: tag the title so the AFW build is recognisable in the menu
+    static const auto REF_NAME = std::format("REFramework AFW [{}+{}-{:.8}]", REF_TAG, REF_COMMITS_PAST_TAG, REF_COMMIT_HASH);
     bool is_open = true;
 
     ImGui::Begin(REF_NAME.c_str(), &is_open, ImGuiWindowFlags_None);
@@ -1651,6 +1728,7 @@ void REFramework::draw_ui() {
     m_last_window_pos = ImGui::GetWindowPos();
     m_last_window_size = ImGui::GetWindowSize();
 
+    ImGui::PopFont();
     ImGui::End();
 
     // save the menu state in config
@@ -2458,7 +2536,6 @@ bool REFramework::init_d3d12() {
         spdlog::error("[D3D12] Failed to initialize ImGui.");
         return false;
     }
-
     m_d3d12.imgui_backend_datas[1] = ImGui::GetIO().BackendRendererUserData;
 
     return true;

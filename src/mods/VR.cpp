@@ -11,7 +11,10 @@
 #include <sdk/TDBVer.hpp>
 #include <reframework/API.hpp>
 
-#if TDB_VER <= 49
+#if TDB_VER >= 83
+#include "sdk/regenny/re9/via/Window.hpp"
+#include "sdk/regenny/re9/via/SceneView.hpp"
+#elif TDB_VER <= 49
 #include "sdk/regenny/re7/via/Window.hpp"
 #include "sdk/regenny/re7/via/SceneView.hpp"
 #elif TDB_VER < 69
@@ -1247,6 +1250,12 @@ std::optional<std::string> VR::initialize_openvr_input() {
 
 std::optional<std::string> VR::initialize_openxr() {
     m_openxr = std::make_shared<runtimes::OpenXR>();
+
+    // RE2 AFW port: a re-created runtime starts at EARLY sync. AFW needs VERY_LATE (PureDark's fix for
+    // AFW running at lower fps), and OpenXR can be re-initialized mid-session without a config reload.
+    if (is_using_afw()) {
+        m_openxr->custom_stage = VRRuntime::SynchronizeStage::VERY_LATE;
+    }
 
     spdlog::info("[VR] Initializing OpenXR");
 
@@ -3268,6 +3277,12 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
             return false;
 #endif
 
+#if defined(RE9)
+        case "Gui_ui0440"_fnv: // Black bars in cutscenes
+            game_object->shouldDraw = false;
+            return false;
+#endif
+
 #if TDB_VER >= 73
         case "ui0199"_fnv: // weird black bars in Kunitsu-Gami
             return false;
@@ -4450,7 +4465,7 @@ void VR::openvr_input_to_re2_re3(REManagedObject* input_system) {
     const auto is_quickturn_down = is_action_active(m_action_re2_quickturn, m_left_joystick) || is_action_active(m_action_re2_quickturn, m_right_joystick);
     const auto is_reset_view_down = is_action_active(m_action_re2_reset_view, m_left_joystick) || is_action_active(m_action_re2_reset_view, m_right_joystick);
     const auto is_change_ammo_down = is_action_active(m_action_re2_change_ammo, m_left_joystick) || is_action_active(m_action_re2_change_ammo, m_right_joystick);
-	const auto is_toggle_flashlight_down = is_action_active(m_action_re2_toggle_flashlight, m_left_joystick);
+	const auto is_toggle_flashlight_down = is_action_active(m_action_re2_toggle_flashlight, m_left_joystick) || is_action_active(m_action_re2_toggle_flashlight, m_right_joystick);
 
     const auto is_left_system_button_down = is_action_active(m_action_system_button, m_left_joystick);
     const auto is_right_system_button_down = is_action_active(m_action_system_button, m_right_joystick);

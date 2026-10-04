@@ -294,7 +294,13 @@ private:
     // sind, haengt an GPU und installierten DLLs, der Index waere auf einem anderen Rechner
     // etwas anderes. Default FSR3.
     const ModInt32::Ptr m_upscale_type_setting{
-        ModInt32::create(generate_name("UpscaleType_V2"), (uint32_t)PDUpscaleType::FSR3)
+#if defined(RE4)
+#define DEFAULT_UPSCALE_TYPE (uint32_t)PDUpscaleType::FSR3
+#else
+// RE2 AFW port: the PDPerfPlugin shipped for RE2 only offers DLSS (log: "Upscale method 0 is available")
+#define DEFAULT_UPSCALE_TYPE (uint32_t)PDUpscaleType::DLSS
+#endif
+        ModInt32::create(generate_name("UpscaleType_V2"), DEFAULT_UPSCALE_TYPE)
     };
 
     const ModCombo::Ptr m_upscale_quality{

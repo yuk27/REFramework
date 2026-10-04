@@ -191,6 +191,7 @@ std::optional<std::string> Hooks::hook_update_transform() {
         { "0F B6 D1 48 8B CB E8 ? ? ? ? 48 8B 9B ? ? ? ?", 7 }, // RE7
         { "0F B6 D0 48 8B CB E8 ? ? ? ? 48 8B 9B ? ? ? ?", 7 }, // RE7 Demo
         { "31 D2 41 ? F8 E8 ? ? ? ? EB", 6}, // MHWILDS/TDB74+
+        { "31 D2 41 ? F8 E8 ? ? ? ? B8 01 00 00 00 F0", 6 }, // MHS3/TDB82+ (lock xadd after call)
     };
 
     uintptr_t update_transform = 0;
@@ -320,9 +321,15 @@ std::optional<std::string> Hooks::hook_gui_draw() {
             offset = 15;
 
             if (!gui_draw_call) {
-                //return "Unable to find gui_draw_call pattern.";
-                spdlog::error("[Hooks] Unable to find gui_draw_call pattern.");
-                return std::nullopt; // Don't bother erroring out the entire mod just because of this
+                // PRAGMATA
+                gui_draw_call = utility::scan(game, "49 8B 0C C6 48 83 79 ? 00 74 ? E8 ? ? ? ?");
+                offset = 12;
+
+                if (!gui_draw_call) {
+                    //return "Unable to find gui_draw_call pattern.";
+                    spdlog::error("[Hooks] Unable to find gui_draw_call pattern.");
+                    return std::nullopt; // Don't bother erroring out the entire mod just because of this
+                }
             }
         }
     }
@@ -590,9 +597,14 @@ std::optional<std::string> Hooks::hook_view_get_size() {
         ref = utility::find_pattern_in_path((uint8_t*)get_size_func, 1000, false, "48 8B CB E8");
     }
 
+    
 #if TDB_VER >= 74
     if (!ref) {
-        ref = utility::find_pattern_in_path((uint8_t*)get_size_func, 1000, false, "48 89 F2 E8"); // >= TDB74?
+        ref = utility::find_pattern_in_path((uint8_t*)get_size_func, 1000, false, "48 89 F2 E8"); // >= TDB74 (MHWILDS)
+    }
+
+    if (!ref) {
+        ref = utility::find_pattern_in_path((uint8_t*)get_size_func, 1000, false, "48 8B CF E8"); // Pragmata
     }
 #endif
 
@@ -997,6 +1009,10 @@ void Hooks::global_application_entry_hook(void* entry, const char* name, size_t 
 }
 
 float* Hooks::view_get_size_hook_internal(REManagedObject* scene_view, float* result) {
+    if (!g_framework->is_ready()) {
+        return m_view_get_size_hook->get_original<decltype(view_get_size_hook)>()(scene_view, result);
+    }
+
     const auto& mods = g_framework->get_mods()->get_mods();
 
     for (auto& mod : mods) {
@@ -1019,6 +1035,10 @@ float* Hooks::view_get_size_hook(REManagedObject* scene_view, float* result) {
 }
 
 Matrix4x4f* Hooks::camera_get_projection_matrix_hook_internal(REManagedObject* camera, Matrix4x4f* result) {
+    if (!g_framework->is_ready()) {
+        return m_camera_get_projection_matrix_hook->get_original<decltype(camera_get_projection_matrix_hook)>()(camera, result);
+    }
+
     const auto& mods = g_framework->get_mods()->get_mods();
 
     for (auto& mod : mods) {
@@ -1041,6 +1061,10 @@ Matrix4x4f* Hooks::camera_get_projection_matrix_hook(REManagedObject* camera, Ma
 }
 
 Matrix4x4f* Hooks::camera_get_view_matrix_hook_internal(REManagedObject* camera, Matrix4x4f* result) {
+    if (!g_framework->is_ready()) {
+        return m_camera_get_view_matrix_hook->get_original<decltype(camera_get_view_matrix_hook)>()(camera, result);
+    }
+
     const auto& mods = g_framework->get_mods()->get_mods();
 
     for (auto& mod : mods) {

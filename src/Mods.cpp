@@ -16,10 +16,12 @@
 #include "mods/ManualFlashlight.hpp"
 #include "mods/PluginLoader.hpp"
 #include "mods/REFrameworkConfig.hpp"
+#include "mods/MethodDatabase.hpp"
 #include "mods/Scene.hpp"
 #include "mods/ScriptRunner.hpp"
 #include "mods/VR.hpp"
 #include "mods/LooseFileLoader.hpp"
+#include "mods/FaultyFileDetector.hpp"
 #include "mods/vr/games/RE8VR.hpp"
 #include "mods/TemporalUpscaler.hpp"
 
@@ -30,12 +32,17 @@ Mods::Mods() {
     m_mods.emplace_back(REFrameworkConfig::get());
 
 #if defined(REENGINE_AT)
-    m_mods.emplace_back(std::make_unique<IntegrityCheckBypass>());
+    m_mods.emplace_back(IntegrityCheckBypass::get_shared_instance());
 #endif
 
 #ifndef BAREBONES
+    m_mods.emplace_back(MethodDatabase::get());
     m_mods.emplace_back(Hooks::get());
     m_mods.emplace_back(LooseFileLoader::get());
+
+#if defined(MHWILDS)
+    m_mods.emplace_back(FaultyFileDetector::get());
+#endif
 
     m_mods.emplace_back(VR::get());
     m_mods.emplace_back(TemporalUpscaler::get());
@@ -158,6 +165,7 @@ void Mods::on_post_frame() const {
 }
 
 void Mods::on_draw_ui() const {
+#if defined(RE4)
     // Only these mods are allowed to draw their tree in the menu, everything else stays hidden.
     // ScriptRunner also draws the "Script Generated UI" tree.
     static const std::array<std::string_view, 2> visible_mods {
@@ -174,6 +182,13 @@ void Mods::on_draw_ui() const {
 
         mod->on_draw_ui();
     }
+#else
+    // RE2 AFW port: other games keep the full REFramework menu (VR, Camera, Graphics, ...).
+    // The rendering technique and framewarp options are still drawn at the end of the Upscaler tree.
+    for (auto& mod : m_mods) {
+        mod->on_draw_ui();
+    }
+#endif
 }
 
 void Mods::on_device_reset() const {
