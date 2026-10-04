@@ -38,16 +38,14 @@ jobs:
           cmake --build "${{github.workspace}}/build" --config ${{env.BUILD_TYPE}} --target RE2 -- /m /nologo *>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/build.log"
           $code = $LASTEXITCODE
           if ($code -ne 0) {
-            $errs = Select-String -Path "$env:RUNNER_TEMP/build.log" -Pattern '(: error |: fatal error |error MSB|error LNK|CMake Error)' |
-              ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 40
+            $errs = @(Select-String -Path "$env:RUNNER_TEMP/build.log" -Pattern '(: error |: fatal error |error MSB|error LNK|CMake Error)' |
+              ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 40)
             for ($i = 0; $i -lt $errs.Count; $i += 4) {
               $chunk = ($errs[$i..([Math]::Min($i + 3, $errs.Count - 1))]) -join '%0A'
               Write-Output "::error title=build errors $($i + 1)+::$chunk"
             }
-            if ($errs.Count -eq 0) {
-              $tail = (Get-Content "$env:RUNNER_TEMP/build.log" | Select-Object -Last 60) -join '%0A'
-              Write-Output "::error title=build failed::$tail"
-            }
+            $tail = (Get-Content "$env:RUNNER_TEMP/build.log" | Select-Object -Last 40) -join '%0A'
+            Write-Output "::error title=build log tail::$tail"
           }
           exit $code
 
