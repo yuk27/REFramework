@@ -42,7 +42,7 @@
 #include "TemporalUpscaler.hpp"
 
 #include "VR.hpp"
-#include "../../build64_all/_deps/directxtk12-src/Src/d3dx12.h"
+#include <../../directxtk12-src/Src/d3dx12.h> // was a hard-coded path into a local build64_all folder
 
 std::shared_ptr<TemporalUpscaler>& TemporalUpscaler::get() {
     static std::shared_ptr instance = std::make_shared<TemporalUpscaler>();
