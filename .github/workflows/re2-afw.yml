@@ -17,11 +17,39 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Output is also echoed as annotations on this run (readable through the API),
+      # because the session maintaining this fork can't reach the raw log storage.
       - name: Configure CMake
-        run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DDEVELOPER_MODE=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          cmake -S "${{github.workspace}}" -B "${{github.workspace}}/build" -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DDEVELOPER_MODE=ON "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" *>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/configure.log"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = (Get-Content "$env:RUNNER_TEMP/configure.log" | Select-Object -Last 60) -join '%0A'
+            Write-Output "::error title=configure failed::$tail"
+          }
+          exit $code
 
       - name: Build
-        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target RE2 -- /m
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          cmake --build "${{github.workspace}}/build" --config ${{env.BUILD_TYPE}} --target RE2 -- /m /nologo *>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/build.log"
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $errs = Select-String -Path "$env:RUNNER_TEMP/build.log" -Pattern '(: error |: fatal error |error MSB|error LNK|CMake Error)' |
+              ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 40
+            for ($i = 0; $i -lt $errs.Count; $i += 4) {
+              $chunk = ($errs[$i..([Math]::Min($i + 3, $errs.Count - 1))]) -join '%0A'
+              Write-Output "::error title=build errors $($i + 1)+::$chunk"
+            }
+            if ($errs.Count -eq 0) {
+              $tail = (Get-Content "$env:RUNNER_TEMP/build.log" | Select-Object -Last 60) -join '%0A'
+              Write-Output "::error title=build failed::$tail"
+            }
+          }
+          exit $code
 
       - name: Collect files
         shell: pwsh
@@ -43,3 +71,4 @@ jobs:
           name: RE2-AFW
           path: ${{github.workspace}}/out/
           if-no-files-found: error
+          retention-days: 14
