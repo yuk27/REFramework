@@ -1,5 +1,6 @@
 name: Dev Release
-on: [push, workflow_dispatch]
+# RE2 AFW fork: no automatic 13-game build on every push (use re2-afw.yml)
+on: [workflow_dispatch]
 env:
   BUILD_TYPE: Release
 jobs:
